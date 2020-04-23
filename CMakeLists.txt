@@ -3,9 +3,9 @@ set(CMAKE_CXX_STANDARD 11)
 
 
 set(BinaryContainersName "binarycontainer1" CACHE STRING "Binary Container's Name")
-set(IpCachePath "/home/saleh/01_workspace/00_vitis/ip_cache" CACHE STRING "IP Cache Path(with enough space)")
-set(Profiling OFF CACHE BOOL "Profiling ON/OFF")
-
+set(IpCachePath "${CMAKE_BINARY_DIR}/ip_cache" CACHE STRING "IP Cache Path(with enough space)")
+set(Profiling ON CACHE BOOL "Profiling ON/OFF")
+set(KernelFrequency "200" CACHE STRING "in MHz")
 
 
 
@@ -25,6 +25,9 @@ target_link_libraries(MyHostExecutable ${Vitis_LIBRARIES})
 
 # ====================================================================================================
 # Global vars and files...
+
+#Creating IpCacheFolder
+file(MAKE_DIRECTORY ${IpCachePath})
 
 # Create bash scripts for compiling 
 file(WRITE "${CMAKE_BINARY_DIR}/Compile_Hw_Batch.sh" "find . -name \"*.xo\" -type f -delete\n")
@@ -49,6 +52,14 @@ else()
     set(CpuCount 4)
 endif()
 message("Detected CPU Core Count: ${CpuCount}")
+
+if(${Profiling})
+    set(true_false_profiling "true")
+else()
+    set(true_false_profiling "false")
+endif()
+configure_file(${CMAKE_SOURCE_DIR}/scripts/xrt.ini.in ${CMAKE_BINARY_DIR}/xrt.ini)
+
 
 
 # ====================================================================================================
@@ -76,9 +87,12 @@ function(CreateKernel
     Path
     TopFunctionsName  
     IsProfiled
+    ProfileData
+    ProfileStall
+    ProfileExec
     SpTag
     OutNkTagsAppended)
-    
+
     # Creating compile config file for this kernel
     file(WRITE "${CMAKE_BINARY_DIR}/${ContainersName}-${TopFunctionsName}-compile.ini" "kernel=${TopFunctionsName}\n")
     file(APPEND "${CMAKE_BINARY_DIR}/${ContainersName}-${TopFunctionsName}-compile.ini" "debug=1\n")
@@ -91,11 +105,29 @@ function(CreateKernel
     set(NkTag "nk=${TopFunctionsName}:1:${TopFunctionsName}_1")
     set(${OutNkTagsAppended} "${${OutNkTagsAppended}}\n${NkTag}" PARENT_SCOPE)
 
+    set(ProfilingOptionsCompile "")
+    set(ProfilingOptionsLink "")
+
+    if(${IsProfiled})
+        if(${ProfileData})
+            set(ProfilingOptionsLink "${ProfilingOptionsLink} --profile_kernel data:${TopFunctionsName}:all:all:all")
+        endif()
+        if(${ProfileStall})
+            set(ProfilingOptionsCompile "${ProfilingOptionsCompile} --profile_kernel stall:${TopFunctionsName}:all:all")
+            set(ProfilingOptionsLink "${ProfilingOptionsLink} --profile_kernel stall:${TopFunctionsName}:all:all")
+        endif()
+        if(${ProfileExec})
+            set(ProfilingOptionsLink "${ProfilingOptionsLink} --profile_kernel exec:${TopFunctionsName}:all:all")
+        endif()
+    endif()
+
+
     set(hw_compile 
         ${Vitis_COMPILER} 
         --target hw
         --compile
         --jobs ${CpuCount}
+        --kernel_frequency ${KernelFrequency}
         -I\"${CMAKE_SOURCE_DIR}/inc\" 
         --config ${CMAKE_BINARY_DIR}/common-config.ini 
         --config ${CMAKE_BINARY_DIR}/${ContainersName}-${TopFunctionsName}-compile.ini 
@@ -108,6 +140,7 @@ function(CreateKernel
         --target hw_emu
         --compile
         --jobs ${CpuCount}
+        --kernel_frequency ${KernelFrequency}
         -I\"${CMAKE_SOURCE_DIR}/inc\" 
         --config ${CMAKE_BINARY_DIR}/common-config.ini 
         --config ${CMAKE_BINARY_DIR}/${ContainersName}-${TopFunctionsName}-compile.ini 
@@ -120,6 +153,7 @@ function(CreateKernel
         --target sw_emu
         --compile
         --jobs ${CpuCount}
+        --kernel_frequency ${KernelFrequency}
         -I\"${CMAKE_SOURCE_DIR}/inc\" 
         --config ${CMAKE_BINARY_DIR}/common-config.ini 
         --config ${CMAKE_BINARY_DIR}/${ContainersName}-${TopFunctionsName}-compile.ini 
@@ -139,10 +173,12 @@ function(CreateKernel
     set(hwemu_link "${hwemu_link} ${CMAKE_BINARY_DIR}/${ContainersName}.build/${TopFunctionsName}_hw_emu.xo" PARENT_SCOPE) 
     set(swemu_link "${swemu_link} ${CMAKE_BINARY_DIR}/${ContainersName}.build/${TopFunctionsName}_sw_emu.xo" PARENT_SCOPE) 
 
-    if(${IsProfiled})
-        set(hw_link_command "${hw_link_command} --profile_kernel data:${TopFunctionsName}:all:all")
+    if(${IsProfiled} AND (${ProfileData} OR ${ProfileStall} OR ${ProfileExec}))
+        set(hw_link_command "${hw_link_command} ${SpTag} ${ProfilingOptionsLink}")
+    else()
+        set(hw_link_command "${hw_link_command} ${SpTag}")
     endif()
-    set(hw_link_command "${hw_link_command} ${SpTag}")
+    
 
     # Identical commands for hw-emu link process
     set(hwemu_link_command "${hw_link_command}")
@@ -171,6 +207,9 @@ CreateKernel(
     "${CMAKE_SOURCE_DIR}/src/kernels/mykernel1.cpp"
     "vadd_pipelined"
     ${Profiling}
+    FALSE
+    FALSE
+    TRUE
     ""
     GlobalNkTags)
 
@@ -179,6 +218,9 @@ CreateKernel(
     "${CMAKE_SOURCE_DIR}/src/kernels/mykernel2.cpp"
     "vadd"
     ${Profiling}
+    FALSE
+    TRUE
+    TRUE
     ""
     GlobalNkTags)
 
@@ -193,6 +235,7 @@ set( _link_hw_
     ${Vitis_COMPILER}
     --target hw --link
     --jobs ${CpuCount}
+    --kernel_frequency ${KernelFrequency}
     --config ${CMAKE_BINARY_DIR}/common-config.ini
     --config ${CMAKE_BINARY_DIR}/${BinaryContainersName}-link.ini
     -o\"${CMAKE_BINARY_DIR}/${BinaryContainersName}_hw.xclbin\"
@@ -206,6 +249,7 @@ set( _link_hwemu_
     ${Vitis_COMPILER}
     --target hw_emu --link
     --jobs ${CpuCount}
+    --kernel_frequency ${KernelFrequency}
     --config ${CMAKE_BINARY_DIR}/common-config.ini
     --config ${CMAKE_BINARY_DIR}/${BinaryContainersName}-link.ini
     -o\"${CMAKE_BINARY_DIR}/${BinaryContainersName}_hw_emu.xclbin\"
@@ -219,6 +263,7 @@ set( _link_swemu_
     ${Vitis_COMPILER}
     --target sw_emu --link
     --jobs ${CpuCount}
+    --kernel_frequency ${KernelFrequency}
     --config ${CMAKE_BINARY_DIR}/common-config.ini
     --config ${CMAKE_BINARY_DIR}/${BinaryContainersName}-link.ini
     -o\"${CMAKE_BINARY_DIR}/${BinaryContainersName}_sw_emu.xclbin\"
@@ -232,6 +277,7 @@ set( _link_interactive_imp_
     ${Vitis_COMPILER}
     --target hw --link
     --jobs ${CpuCount}
+    --kernel_frequency ${KernelFrequency}
     --config ${CMAKE_BINARY_DIR}/common-config.ini
     --config ${CMAKE_BINARY_DIR}/${BinaryContainersName}-link.ini
     -o\"${CMAKE_BINARY_DIR}/${BinaryContainersName}_hw.xclbin\"
